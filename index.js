@@ -1,4 +1,4 @@
-'use strict'
+'use strict';
 
 function isString(value) {
   return typeof value === 'string';
@@ -13,7 +13,8 @@ function isFloat(value) {
 }
 
 function isPhone(value) {
-  const reg = /^((8|7|\+7)[\- ]?)?(\(?\d{3}\)?[\- ]?)?[\d\- ]{7,10}$/;
+  // const reg = /^((8|7|\+7)[\- ]?)?(\(?\d{3}\)?[\- ]?)?[\d\- ]{7,10}$/; // for all phones
+  const reg = /^((8|7|\+7)[\- ]?)(\(?\d{3}\)?[\- ]?)[\d\- ]{7,10}$/; // mobile phones
   return reg.test(value);
 }
 
@@ -28,7 +29,7 @@ function isTypedArray(value, predicate) {
 function isKeyExist(object, key) {
   return key.split('.').
       reduce((a, c) => c in a ? a[c] || 1 : false,
-          Object.assign({...object}, object)) !== false;
+          Object.assign({}, object)) !== false;
 }
 
 function isKeysExist(object, keys) {
@@ -36,10 +37,12 @@ function isKeysExist(object, keys) {
 }
 
 function getValueFromKey(object, key, def = null) {
-  return key.split('.').reduce((a, c) => c in a ? a[c] : def, {...object})
+  return key.split('.').reduce((a, c) => c in a ? a[c] : def, {...object});
 }
 
-// todo add object deep set
+function setValueFromKey(object, key, value) {
+  key.split('.').reduce((a, c, i, arr) => arr.length !== (i + 1) ? (c in a ? a[c] : a[c] = {}) : a[c] = value, object);
+}
 
 export {
   isString,
@@ -56,6 +59,7 @@ export {
 const SanitizerError = {
   InvalidPayload: 'InvalidPayload',
   InvalidSpecRule: 'InvalidSpecRule',
+  InvalidStructureValue: 'InvalidStructureValue',
   InvalidValue: 'InvalidValue',
   KeyDoesNotExist: 'KeyDoesNotExist',
   ExtraField: 'ExtraField',
@@ -76,8 +80,7 @@ class ISanitizerRule {
 
 class IntegerRule extends ISanitizerRule {
   sanitize(value, logger = this.logger) {
-    if (!isInteger(value) || !isFloat(value) ||
-        (isString(value) && !/^\d.$/.test(value))) {
+    if (!isInteger(value) && (!isString(value) || !/^\d+$/.test(value))) {
       logger(SanitizerError.InvalidValue);
       value = 0;
     }
@@ -87,8 +90,7 @@ class IntegerRule extends ISanitizerRule {
 
 class FloatRule extends ISanitizerRule {
   sanitize(value, logger = this.logger) {
-    if (!isInteger(value) || !isFloat(value) ||
-        (isString(value) && !/^\d.\.\d.$/.test(value))) {
+    if (!isFloat(value) && (!isString(value) || !/^\d+\.\d+$/.test(value))) {
       logger(SanitizerError.InvalidValue);
       value = 0.0;
     }
@@ -112,7 +114,7 @@ class PhoneRule extends ISanitizerRule {
       logger(SanitizerError.InvalidValue);
       value = '';
     }
-    return value.replace(/\D./, '');
+    return value.replace(/^8/, '7').replace(/\D+/g, '');
   }
 }
 
@@ -151,8 +153,6 @@ class TypedArrayRule extends IStructuralRule {
   }
 }
 
-class SanitizeError extends Error {}
-
 /** @typedef {Object} SanitizerSpec */
 class Sanitizer {
   /**
@@ -160,21 +160,8 @@ class Sanitizer {
    * @param {IStructuralRule|ISanitizerRule} rules.*
    */
   constructor(rules) {
-    this.rules = {};
-    const errors = {};
-    this.errors = new Proxy(errors, {
-      get(target, p) {
-        return target[p];
-      },
-      set(target, p, value) {
-        if (!target[p]) {
-          target[p] = [value];
-        } else {
-          target[p].push(value);
-        }
-      },
-    });
-
+    this.rules = rules;
+    this.errors = {};
   }
 
   /**
@@ -183,7 +170,7 @@ class Sanitizer {
    * @throws {SanitizeError}
    */
   sanitizeBySpec(spec, payload) {
-    const sanitizedPayload = {}
+    const sanitizedPayload = {};
     const flatSpec = this.toFlatObject(spec);
     const flatPayload = this.toFlatObject(payload);
     const specKeys = Object.keys(flatSpec);
@@ -195,31 +182,33 @@ class Sanitizer {
       }
     }
     for (const specKey in flatSpec) {
-      if (!isKeyExist(payload, specKey)) {
-        this.errors[specKey] = SanitizerError.InvalidValue;
-      } else {
-        const rule = getValueFromKey(spec, specKey)
-        if (!this.rules.includes(rule)) {
-          this.errors[specKey] = SanitizerError.InvalidSpecRule;
+      if (isKeyExist(payload, specKey)) {
+        const ruleName = getValueFromKey(spec, specKey);
+        if (ruleName in this.rules) {
+          const rawValue = flatPayload[specKey];
+          const sanitizer = this.rules[ruleName];
+          setValueFromKey(sanitizedPayload, specKey, sanitizer.sanitize(rawValue, error => this.errors[specKey] = error));
         } else {
-          // todo add object deep set
+          this.errors[specKey] = SanitizerError.InvalidSpecRule;
         }
+      } else {
+        this.errors[specKey] = SanitizerError.KeyDoesNotExist;
       }
     }
-    return sanitizedPayload
+    return sanitizedPayload;
   }
 
   toFlatObject(object) {
     function flat(res, key, val, pre = '') {
       const prefix = [pre, key].filter(v => v).join('.');
-      return typeof val === 'object'
+      return typeof val === 'object' && !isArray(val)
           ? Object.keys(val).
               reduce((prev, curr) => flat(prev, curr, val[curr], prefix), res)
           : Object.assign(res, {[prefix]: val});
     }
 
     return Object.keys(object).
-        reduce((prev, curr) => flat(prev, curr, input[curr]), {});
+        reduce((prev, curr) => flat(prev, curr, object[curr]), {});
   }
 }
 
@@ -228,6 +217,10 @@ const StandardSanitizer = new Sanitizer({
   'float': new FloatRule(),
   'phone': new PhoneRule(),
   'string': new StringRule(),
+  'int[]': new TypedArrayRule(new IntegerRule()),
+  'float[]': new TypedArrayRule(new FloatRule()),
+  'phone[]': new TypedArrayRule(new PhoneRule()),
+  'string[]': new TypedArrayRule(new StringRule()),
 });
 
 export {
@@ -236,5 +229,6 @@ export {
   StringRule,
   PhoneRule,
   TypedArrayRule,
+  SanitizerError,
   StandardSanitizer,
 };
