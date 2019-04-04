@@ -168,8 +168,26 @@ describe('Sanitizers', () => {
         },
       },
     });
-    expect(StandardSanitizer.errors).
+    expect(StandardSanitizer.getErrors()).
         toStrictEqual({'foo.bar.baz': SanitizerError.InvalidValue});
+
+    const result2 = StandardSanitizer.sanitizeBySpec({
+      foo: {
+        bar: {
+          baz: 'int',
+        },
+      },
+    }, {
+      foo: {
+        bar: {
+          baz: '123',
+          qux: 123,
+        },
+      },
+    });
+    expect(result2).toStrictEqual({foo: {bar: {baz: 123}}});
+    expect(StandardSanitizer.getErrors()).
+        toStrictEqual({'foo.bar.qux': SanitizerError.ExtraField});
   });
 });
 

@@ -41,7 +41,23 @@ function getValueFromKey(object, key, def = null) {
 }
 
 function setValueFromKey(object, key, value) {
-  key.split('.').reduce((a, c, i, arr) => arr.length !== (i + 1) ? (c in a ? a[c] : a[c] = {}) : a[c] = value, object);
+  key.split('.').
+      reduce((a, c, i, arr) => arr.length !== (i + 1)
+          ? (c in a ? a[c] : a[c] = {})
+          : a[c] = value, object);
+}
+
+function toFlatObject(object) {
+  function flat(res, key, val, pre = '') {
+    const prefix = [pre, key].filter(v => v).join('.');
+    return typeof val === 'object' && !isArray(val)
+        ? Object.keys(val).
+            reduce((prev, curr) => flat(prev, curr, val[curr], prefix), res)
+        : Object.assign(res, {[prefix]: val});
+  }
+
+  return Object.keys(object).
+      reduce((prev, curr) => flat(prev, curr, object[curr]), {});
 }
 
 export {
@@ -167,18 +183,19 @@ class Sanitizer {
   /**
    * @param {SanitizerSpec} spec
    * @param {Object} payload
-   * @throws {SanitizeError}
    */
   sanitizeBySpec(spec, payload) {
     const sanitizedPayload = {};
-    const flatSpec = this.toFlatObject(spec);
-    const flatPayload = this.toFlatObject(payload);
+    const flatSpec = toFlatObject(spec);
+    const flatPayload = toFlatObject(payload);
     const specKeys = Object.keys(flatSpec);
     const payloadKeys = Object.keys(flatPayload);
     if (specKeys.length !== payloadKeys.length) {
       for (const payloadKey of payloadKeys) {
-        if (!specKeys.includes(payloadKey))
+        if (!specKeys.includes(payloadKey)) {
           this.errors[payloadKey] = SanitizerError.ExtraField;
+          delete flatPayload[payloadKey];
+        }
       }
     }
     for (const specKey in flatSpec) {
@@ -187,7 +204,9 @@ class Sanitizer {
         if (ruleName in this.rules) {
           const rawValue = flatPayload[specKey];
           const sanitizer = this.rules[ruleName];
-          setValueFromKey(sanitizedPayload, specKey, sanitizer.sanitize(rawValue, error => this.errors[specKey] = error));
+          setValueFromKey(sanitizedPayload, specKey,
+              sanitizer.sanitize(rawValue,
+                  error => this.errors[specKey] = error));
         } else {
           this.errors[specKey] = SanitizerError.InvalidSpecRule;
         }
@@ -198,17 +217,10 @@ class Sanitizer {
     return sanitizedPayload;
   }
 
-  toFlatObject(object) {
-    function flat(res, key, val, pre = '') {
-      const prefix = [pre, key].filter(v => v).join('.');
-      return typeof val === 'object' && !isArray(val)
-          ? Object.keys(val).
-              reduce((prev, curr) => flat(prev, curr, val[curr], prefix), res)
-          : Object.assign(res, {[prefix]: val});
-    }
-
-    return Object.keys(object).
-        reduce((prev, curr) => flat(prev, curr, object[curr]), {});
+  getErrors() {
+    const errors = {...this.errors};
+    this.errors = {};
+    return errors;
   }
 }
 
